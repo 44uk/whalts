@@ -1,122 +1,113 @@
 #!/usr/bin/env ruby
 
-require "nokogiri"
-require "mini_magick"
+require "optparse"
+require "shellwords"
 require "csv"
-require "pry"
 require "pp"
 require 'benchmark'
+
+require "nokogiri"
+require "mini_magick"
+require "pry"
 
 Benchmark.bm() do |x|
   x.report do
 
-
-
+# default options
 opts = {
-  root: "sample",
-  target: "./",
+  mode: :dump,
+  drop_if_empty: true,
+  auto_sizing: true,
+  root: "demo",
+  target: "",
   w: {
     append: true,
-    scale: 0.0
+    scale: 1.0
   },
   h: {
     append: true,
-    scale: 0.0
+    scale: 1.0
   },
-  remove_empty: false,
   write_to: {
     indent_text: "\t",
     indent: 1
-  },
-  mode: :dump
+  }
 }
 
+# TODO: feature function
+OptionParser.new do |opt|
+  opt.on("--mode VALUE", "MODE: (dump|restore)") do |v|
+    opts[:mode] = v if /(dump|restore)/ === v
+  end
+  opt.on("--drop_if_empty", "Drop attribute which empty string.") do |v|
+    opts[:drop_if_empty] = v if v
+  end
+  opt.on("--auto_sizing", "Get size from image file using ImageMagick.") do |v|
+    opts[:auto_sizing] = v if v
+  end
+  opt.parse!(ARGV)
+end
+
+
+
 # このスクリプトを実行した位置からみた opt[:root]
-doc_root    = File.expand_path(File.join(File.dirname(__FILE__), opts[:root]))
+app_root    = File.expand_path(File.join(File.dirname(__FILE__)))
+doc_root    = File.join(app_root, opts[:root])
 target_root = File.join(doc_root, opts[:target])
 
-restore_table = CSV.table(doc_root + "/dump.csv")
+restore_table = CSV.table(app_root + "/dump.csv") if opts[:mode] == :restore
 
-
-CSV.open(doc_root + "/dump.csv", "w") do |csv|
-  csv << ["alt", "width", "height", "src", "path", "hash"]
+if opts[:mode] == :dump
+  CSV.open(app_root + "/dump.csv", "w") do |csv|
+    csv << ["alt", "width", "height", "src", "path", "hash"]
+  end
 end
 
 
 p_replace = lambda do |path|
+  #binding.pry
   doc = Nokogiri::HTML(open(path))
 
   # each img tag in page.
   doc.xpath("//img").each do |img|
-    src = img["src"]
+    img_src = img["src"]
 
     # reject external resource
-    next if /^http(s)?:/ === src
+    next if /^http(s)?:/ === img_src
 
     # TODO: only supported end with extension.
-    next unless /(gif|jpg|jpeg|png)$/ === src
-
-
+    next unless /(gif|jpg|jpeg|png)$/ === img_src
 
     # move to directory containing current image
     Dir.chdir(File.dirname(path)) do |current_path|
-      prepend_path = (/^\// === src) ? doc_root : current_path
-      full_path = File.join(prepend_path, src)
+      prepend_path = (/^\// === img_src) ? doc_root : current_path
+      full_path = File.join(prepend_path, img_src)
 
       unless File.exists?(full_path)
-        #puts "-" * 80
-        #puts "File is not found: #{full_path}"
+        puts "File is not found: #{full_path}"
         next
       end
-
-      # fetch size from file
-      img_obj = MiniMagick::Image.new(full_path)
 
       # make path from document root
       doc_img_path = full_path.sub(doc_root, "")
 
-      # get img tag attributes from tag
       img_alt = img["alt"]
-      img_w   = img["width"]
-      img_h   = img["height"]
-
-
-
-      # restore mode
-      if opts[:mode] == :restore
-        # get dumbed info
-        hash = Digest::SHA1.hexdigest("%s%s" % [doc_img_path, path])
-        row = restore_table[restore_table[:hash].index(hash)]
-
-        # overwrite width / height attributes
-        if opts[:w][:scale]
-          w = (img_obj[:width]  * opts[:w][:scale]).to_i
-        end
-
-        if opts[:h][:scale]
-          h = (img_obj[:height] * opts[:h][:scale]).to_i
-        end
-
-        img["width"]  = w unless img["width"].nil?  && opts[:w][:append]
-        img["height"] = h unless img["height"].nil? && opts[:h][:append]
-
-        # if empty(attribute is empty value), remove the attribute.
-        if opts[:remove_empty]
-          img.delete("width")  if img["width"].nil?  || img["width"].empty?
-          img.delete("height") if img["height"].nil? || img["height"].empty?
-        end
-
-        # overwrite alt attribute
-        img["alt"] = img_alt
-
-        # overwrite
-        # TODO: unexpected change occured. (<br/> => <br>)
-        open(path, "w") {|file| doc.write_html_to(file, opts[:write_to]) }
+      img_w = 0
+      img_h = 0
+      if opts[:auto_sizing]
+        img_obj = MiniMagick::Image.new(full_path)
+        # get attribures from image file
+        img_w = img_obj[:width]
+        img_h = img_obj[:height]
+      else
+        # get attributes from img tag
+        img_w = img["width"]
+        img_h = img["height"]
       end
 
       # dump mode
       if opts[:mode] == :dump
-        CSV.open(doc_root + "/dump.csv", "a") do |csv|
+        CSV.open(app_root + "/dump.csv", "a") do |csv|
           csv << [
             img_alt, img_w, img_h, doc_img_path, path,
             Digest::SHA1.hexdigest("%s%s" % [doc_img_path, path]) # hash for key
@@ -124,14 +115,63 @@ p_replace = lambda do |path|
         end
       end
 
+
+
+      # restore mode
+      if opts[:mode] == :restore
+        # get dumped info
+        hash = Digest::SHA1.hexdigest("%s%s" % [doc_img_path, path])
+        row = restore_table[restore_table[:hash].index(hash)] # find row by hash
+
+        # skip suspicious row
+        unless row.class != CSV::Row
+          next
+        end
+
+        p row.class
+
+        w = row[:width]
+        h = row[:height]
+        alt = row[:alt]
+
+        # overwrite width / height attributes
+        if opts[:w][:scale]
+          w = (img_obj[:width] * opts[:w][:scale]).to_i
+        else
+          w = img_obj[:width]
+        end
+
+        if opts[:h][:scale]
+          h = (img_obj[:height] * opts[:h][:scale]).to_i
+        else
+          h = img_obj[:height]
+        end
+
+        # overwrite width / height attribute
+        img["width"]  = w if ! img["width"].nil?  || opts[:w][:append]
+        img["height"] = h if ! img["height"].nil? || opts[:h][:append]
+
+        # if empty(attribute is empty value), remove the attribute.
+        if opts[:drop_if_empty]
+          img.delete("width")  if ! img["width"].nil?  && img["width"].empty?
+          img.delete("height") if ! img["height"].nil? && img["height"].empty?
+        end
+
+        # overwrite alt attribute
+        img["alt"] = alt
+
+        # overwrite
+        # TODO: unexpected change occured. (<br/> => <br>)
+        open(path, "w") {|file| doc.write_html_to(file, opts[:write_to]) }
+      end
+
     end
   end
 end
 
-#p_replace.call "/Volumes/data/-local/276-023-shinkenzemi/s/new1/kyouzaia/challenge.html"
-#exit
+Dir.glob(File.join(target_root, "/**/*.html"), &p_replace)
 
-Dir.glob("#{target_root}/**/*.html", &p_replace)
+
 
   end
 end
