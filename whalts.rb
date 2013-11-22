@@ -18,8 +18,8 @@ opts = {
   mode: :dump,
   drop_if_empty: true,
   auto_sizing: true,
-  root: "demo",
-  target: "",
+  root: "s",
+  target: "new1/taiken",
   w: {
     append: true,
     scale: 1.0
@@ -30,14 +30,14 @@ opts = {
   },
   write_to: {
     indent_text: "\t",
-    indent: 1
+    indent: 2
   }
 }
 
 # TODO: feature function
 OptionParser.new do |opt|
   opt.on("--mode VALUE", "MODE: (dump|restore)") do |v|
-    opts[:mode] = v if /(dump|restore)/ === v
+    opts[:mode] = v.to_sym if /(dump|restore)/ === v
   end
   opt.on("--drop_if_empty", "Drop attribute which empty string.") do |v|
     opts[:drop_if_empty] = v if v
@@ -123,12 +123,17 @@ p_replace = lambda do |path|
         hash = Digest::SHA1.hexdigest("%s%s" % [doc_img_path, path])
         row = restore_table[restore_table[:hash].index(hash)] # find row by hash
 
-        # skip suspicious row
-        unless row.class != CSV::Row
-          next
-        end
+        next if row.none?
 
-        p row.class
+        # no change?
+        replacer = Digest::SHA1.hexdigest("%s%s%s%s" % [
+          img["alt"], img["width"], img["height"], doc_img_path, path
+        ])
+        replacee = Digest::SHA1.hexdigest("%s%s%s%s" % [
+          row[:alt], row[:width], row[:height], row[:src], row[:path]
+        ])
+
+        next if replacer == replacee
 
         w = row[:width]
         h = row[:height]
